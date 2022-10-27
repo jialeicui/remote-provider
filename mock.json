@@ -1,0 +1,8 @@
+{
+    "virtual-kubelet":
+    {
+        "cpu": "100",
+        "memory": "100Gi",
+        "pods": "100"
+    }
+}
