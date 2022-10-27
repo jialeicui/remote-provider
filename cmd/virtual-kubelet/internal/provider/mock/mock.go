@@ -169,21 +169,6 @@ func (p *MockProvider) CreatePod(ctx context.Context, pod *v1.Pod) error {
 			},
 		},
 	}
-	/*
-		for _, container := range pod.Spec.InitContainers {
-			pod.Status.InitContainerStatuses = append(pod.Status.InitContainerStatuses, v1.ContainerStatus{
-				Name:         container.Name,
-				Image:        container.Image,
-				Ready:        true,
-				RestartCount: 0,
-				State: v1.ContainerState{
-					Running: &v1.ContainerStateRunning{
-						StartedAt: now,
-					},
-				},
-			})
-		}
-	*/
 	for _, container := range pod.Spec.Containers {
 		pod.Status.ContainerStatuses = append(pod.Status.ContainerStatuses, v1.ContainerStatus{
 			Name:         container.Name,
@@ -200,25 +185,45 @@ func (p *MockProvider) CreatePod(ctx context.Context, pod *v1.Pod) error {
 
 	p.pods[key] = pod
 	p.notifier(pod)
-	ExecAsync("ls -lha", func(out string, err error) {
+	cmd := GenerateCmd(pod)
+	fmt.Println(cmd)
+	ExecAsync(cmd, func(out string, err error) {
 		pod := pod.DeepCopy()
-		time.Sleep(time.Second * 3)
 		fmt.Printf("exec done %v, %v\n", err, out)
 		if err != nil {
 			log.G(ctx).Errorf("execute on remote fail %v", err)
 		}
 		p.podLogs[key] = out
-		now := metav1.NewTime(time.Now())
+		end := metav1.NewTime(time.Now())
+
+		stared := true
+		for _, container := range pod.Spec.InitContainers {
+			pod.Status.InitContainerStatuses = append(pod.Status.InitContainerStatuses, v1.ContainerStatus{
+				Name:         container.Name,
+				Image:        container.Image,
+				Ready:        true,
+				RestartCount: 0,
+				Started:      &stared,
+				State: v1.ContainerState{
+					Terminated: &v1.ContainerStateTerminated{
+						StartedAt:  now,
+						FinishedAt: end,
+						Reason:     "Completed",
+					},
+				},
+			})
+		}
 		for i := range pod.Status.ContainerStatuses {
 			c := &pod.Status.ContainerStatuses[i]
+			c.Started = &stared
 			c.State.Terminated = &v1.ContainerStateTerminated{
 				Reason:     "Completed",
 				StartedAt:  c.State.Running.StartedAt,
-				FinishedAt: now,
+				FinishedAt: end,
 			}
 			c.State.Running = nil
 		}
-		//pod.ResourceVersion = "77"
+		pod.Status.Phase = v1.PodSucceeded
 		p.notifier(pod)
 	})
 
@@ -267,6 +272,7 @@ func (p *MockProvider) DeletePod(ctx context.Context, pod *v1.Pod) (err error) {
 
 	now := metav1.Now()
 	delete(p.pods, key)
+	delete(p.podLogs, key)
 	pod.Status.Phase = v1.PodSucceeded
 	pod.Status.Reason = "MockProviderPodDeleted"
 
