@@ -51,6 +51,7 @@ type MockProvider struct { //nolint:golint
 	config             MockConfig
 	startTime          time.Time
 	notifier           func(*v1.Pod)
+	podLogs            map[string]string
 }
 
 // MockConfig contains a mock virtual-kubelet's configurable parameters.
@@ -78,6 +79,7 @@ func NewMockProviderMockConfig(config MockConfig, nodeName, operatingSystem stri
 		internalIP:         internalIP,
 		daemonEndpointPort: daemonEndpointPort,
 		pods:               make(map[string]*v1.Pod),
+		podLogs:            map[string]string{},
 		config:             config,
 		startTime:          time.Now(),
 	}
@@ -167,7 +169,21 @@ func (p *MockProvider) CreatePod(ctx context.Context, pod *v1.Pod) error {
 			},
 		},
 	}
-
+	/*
+		for _, container := range pod.Spec.InitContainers {
+			pod.Status.InitContainerStatuses = append(pod.Status.InitContainerStatuses, v1.ContainerStatus{
+				Name:         container.Name,
+				Image:        container.Image,
+				Ready:        true,
+				RestartCount: 0,
+				State: v1.ContainerState{
+					Running: &v1.ContainerStateRunning{
+						StartedAt: now,
+					},
+				},
+			})
+		}
+	*/
 	for _, container := range pod.Spec.Containers {
 		pod.Status.ContainerStatuses = append(pod.Status.ContainerStatuses, v1.ContainerStatus{
 			Name:         container.Name,
@@ -184,6 +200,27 @@ func (p *MockProvider) CreatePod(ctx context.Context, pod *v1.Pod) error {
 
 	p.pods[key] = pod
 	p.notifier(pod)
+	ExecAsync("ls -lha", func(out string, err error) {
+		pod := pod.DeepCopy()
+		time.Sleep(time.Second * 3)
+		fmt.Printf("exec done %v, %v\n", err, out)
+		if err != nil {
+			log.G(ctx).Errorf("execute on remote fail %v", err)
+		}
+		p.podLogs[key] = out
+		now := metav1.NewTime(time.Now())
+		for i := range pod.Status.ContainerStatuses {
+			c := &pod.Status.ContainerStatuses[i]
+			c.State.Terminated = &v1.ContainerStateTerminated{
+				Reason:     "Completed",
+				StartedAt:  c.State.Running.StartedAt,
+				FinishedAt: now,
+			}
+			c.State.Running = nil
+		}
+		//pod.ResourceVersion = "77"
+		p.notifier(pod)
+	})
 
 	return nil
 }
@@ -282,8 +319,13 @@ func (p *MockProvider) GetContainerLogs(ctx context.Context, namespace, podName,
 	// Add pod and container attributes to the current span.
 	ctx = addAttributes(ctx, span, namespaceKey, namespace, nameKey, podName, containerNameKey, containerName)
 
+	key, err := buildKeyFromNames(namespace, podName)
+	if err != nil {
+		return nil, err
+	}
+
 	log.G(ctx).Infof("receive GetContainerLogs %q", podName)
-	return io.NopCloser(strings.NewReader("")), nil
+	return io.NopCloser(strings.NewReader(p.podLogs[key])), nil
 }
 
 // RunInContainer executes a command in a container in the pod, copying data
